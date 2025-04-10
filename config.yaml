@@ -1,25 +1,49 @@
 servers:
 
-  - name: "servera.com"
-    url: "https://matrix.servera.com"
-    user: "@usera:servera.com"
-    password: "passworda"
+  - name: "server1.com"
+    url: "https://matrix.server1.com"
+    user: "@user1:server1.com"
+    password: "pass1"
 
-  - name: "serverb.com"
-    url: "https://matrix.serverb.com"
-    user: "@userb:serverb.com"
-    password: "passwordb"
+  - name: "server2.com"
+    url: "https://matrix.server2.com"
+    user: "@user2:server2.com"
+    password: "pass2"
 
-#  - name: "serverc"
-#    url: "https://matrix.serverc.com"
-#    user: "@userc:serverc.com"
-#    password: "passwordc"
+# More servers
+
+#  - name: "server3.com"
+#    url: "https://matrix.server3.com"
+#    user: "@user3:server3.com"
+#    password: "pass3"
+
+#  - name: "server4.com"
+#    url: "https://matrix.server4.com"
+#    user: "@user4:server4.com"
+#    password: "pass4"
+
+
 
 room_links:
+  - from: "!room1:server1.com"
+    from_user: "@user1:server1.com"
+    #from_nickname: "User1"                         #Optional
+    #from_avatar: "mxc://matrix.org/abcd1234"       #Optional
+    to: "!room1:server2.com"
+    to_user: "@user2:server2.com"
+    to_nickname: "Room1 Bridge"                     #Optional
+    to_avatar: "mxc://matrix.org/abcd12345"         #Optional
 
-  - from: "!room1:servera.com"
-    to: "!room1:serverb.com"
+## More bridges
 
-  - from: "!room2:serverb.com"
-    to: "!room2:servera.com"
+#  - from: "!room1:server1.com"
+#    from_user: "@user1:server1.com"
+#    #from_nickname: "User1"
+#    #from_avatar: "mxc://matrix.org/abcd1234"
+#    to: "!room1:server2.com"
+#    to_user: "@user2:server2.com"
+#    to_nickname: "Room1 Bridge"
+#    to_avatar: "mxc://matrix.org/abcd12345"
+
+
 
