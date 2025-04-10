@@ -39,9 +39,16 @@ type Server struct {
 
 // Link represents a room link configuration.
 type Link struct {
-    From string `yaml:"from"`
-    To   string `yaml:"to"`
+    From          string `yaml:"from"`
+    FromUser      string `yaml:"from_user"`
+    FromNickname  string `yaml:"from_nickname,omitempty"`
+    FromAvatar    string `yaml:"from_avatar,omitempty"`
+    To            string `yaml:"to"`
+    ToUser        string `yaml:"to_user"`
+    ToNickname    string `yaml:"to_nickname,omitempty"`
+    ToAvatar      string `yaml:"to_avatar,omitempty"`
 }
+
 
 // Message mapping struct
 type MessageMapping struct {
@@ -73,7 +80,88 @@ type ClientSync struct {
     mutex  sync.Mutex
 }
 
-// Database functions
+
+// Room nicname and avatar functions
+func setRoomProfile(ctx context.Context, client *mautrix.Client, roomID id.RoomID, nickname, avatar string) error {
+	// Fetch the current membership event for the user in this room
+	userID := client.UserID
+	var membershipEvent event.MemberEventContent
+	err := client.StateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
+	if err != nil {
+		return fmt.Errorf("failed to fetch membership event for room %s: %w", roomID, err)
+	}
+
+	// Check if nickname needs to be updated
+	needsUpdate := false
+	if nickname != "" && membershipEvent.Displayname != nickname {
+		log.Printf("Updating nickname in room %s from '%s' to '%s'", roomID, membershipEvent.Displayname, nickname)
+		membershipEvent.Displayname = nickname
+		needsUpdate = true
+	} else if nickname != "" {
+		log.Printf("Nickname in room %s is already '%s', no update needed", roomID, nickname)
+	}
+
+	// Check if avatar needs to be updated
+	if avatar != "" {
+		avatarURI, err := id.ParseContentURI(avatar) // Parse the avatar string into id.ContentURI
+		if err != nil {
+			return fmt.Errorf("failed to parse avatar URI '%s': %w", avatar, err)
+		}
+		avatarString := avatarURI.CUString() // Convert id.ContentURI to id.ContentURIString
+		if membershipEvent.AvatarURL != avatarString {
+			log.Printf("Updating avatar in room %s from '%s' to '%s'", roomID, membershipEvent.AvatarURL, avatarString)
+			membershipEvent.AvatarURL = avatarString
+			needsUpdate = true
+		} else {
+			log.Printf("Avatar in room %s is already '%s', no update needed", roomID, avatarString)
+		}
+	}
+
+	// If no changes are needed, skip the update
+	if !needsUpdate {
+		log.Printf("No changes needed for room %s, skipping update", roomID)
+		return nil
+	}
+
+	// Send the updated membership event
+	resp, err := client.SendStateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
+	if err != nil {
+		return fmt.Errorf("failed to send updated membership event for room %s: %w", roomID, err)
+	}
+	log.Printf("Successfully updated profile for room %s (nickname: '%s', avatar: '%s'), response: %+v", roomID, nickname, avatar, resp)
+	return nil
+}
+
+
+
+
+func processRoomLinks(ctx context.Context, clients map[string]*mautrix.Client, links []Link) {
+    for _, link := range links {
+        fromRoom := id.RoomID(link.From)
+        toRoom := id.RoomID(link.To)
+
+        // Get the clients for the respective users
+        fromClient := getClientForUser(link.FromUser, clients)
+        toClient := getClientForUser(link.ToUser, clients)
+
+        // Set profile for the "from" user in the "from" room
+        if fromClient != nil {
+            if err := setRoomProfile(ctx, fromClient, fromRoom, link.FromNickname, link.FromAvatar); err != nil {
+                log.Printf("Error setting profile for 'from' user in room %s: %v", fromRoom, err)
+            }
+        }
+
+        // Set profile for the "to" user in the "to" room
+        if toClient != nil {
+            if err := setRoomProfile(ctx, toClient, toRoom, link.ToNickname, link.ToAvatar); err != nil {
+                log.Printf("Error setting profile for 'to' user in room %s: %v", toRoom, err)
+            }
+        }
+    }
+}
+
+
+
 
 // Database functions
 func storeMessageMapping(db *sql.DB, mapping MessageMapping) error {
@@ -151,6 +239,30 @@ func createTables(db *sql.DB) error {
 
 
 
+func isRoomJoined(ctx context.Context, client *mautrix.Client, roomID id.RoomID) (bool, error) {
+    // Attempt to fetch the joined members of the room
+    joinedMembers, err := client.JoinedMembers(ctx, roomID)
+    if err != nil {
+        // If the API returns an error, assume the bot is not joined
+        if strings.Contains(err.Error(), "M_FORBIDDEN") {
+            // Forbidden error indicates the bot is not joined
+            return false, nil
+        }
+        return false, fmt.Errorf("failed to fetch joined members for room %s: %w", roomID.String(), err)
+    }
+
+    // Check if the bot's user ID is among the joined members
+    for member := range joinedMembers.Joined {
+        if member == client.UserID {
+            return true, nil
+        }
+    }
+
+    return false, nil
+}
+
+
+
 
 func getSyncToken(db *sql.DB, serverName string) (string, error) {
     var token string
@@ -193,6 +305,16 @@ func storeSyncToken(db *sql.DB, serverName, token string) error {
 
     return nil
 }
+
+func getClientForUser(user string, clients map[string]*mautrix.Client) *mautrix.Client {
+    for _, client := range clients {
+        if client.UserID.String() == user {
+            return client
+        }
+    }
+    return nil
+}
+
 
 
 
@@ -764,35 +886,55 @@ func main() {
     roomLinks := make(map[id.RoomID]id.RoomID)     // from -> to
     roomClients := make(map[id.RoomID]*mautrix.Client) // room -> client
 
-    // Process room links and build mappings
-    for i, link := range config.Links {
-        fromRoom := id.RoomID(link.From)
-        toRoom := id.RoomID(link.To)
+	// Process room links and build mappings
+	for i, link := range config.Links {
+		fromRoom := id.RoomID(link.From)
+		toRoom := id.RoomID(link.To)
 
-        log.Printf("Processing link %d: %s -> %s",
-            i+1, fromRoom, toRoom)
+		log.Printf("Processing link %d: %s (%s) -> %s (%s)",
+			i+1, fromRoom, link.FromUser, toRoom, link.ToUser)
 
-        fromServerName := strings.Split(string(fromRoom), ":")[1]
-        toServerName := strings.Split(string(toRoom), ":")[1]
+		// Get the clients for the specified users
+		fromClient := getClientForUser(link.FromUser, clients)
+		toClient := getClientForUser(link.ToUser, clients)
 
-        fromClient := clients[fromServerName]
-        toClient := clients[toServerName]
+		if fromClient == nil || toClient == nil {
+			log.Printf("Error: Could not find client for one of the users in link %d", i+1)
+			continue
+		}
 
-        // Store mappings
-        roomLinks[fromRoom] = toRoom
-        roomClients[fromRoom] = fromClient
-        roomClients[toRoom] = toClient
+		// Store mappings
+		roomLinks[fromRoom] = toRoom
+		roomClients[fromRoom] = fromClient
+		roomClients[toRoom] = toClient
 
-        // Join rooms
-        if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
-            log.Printf("Warning: Failed to join room %s: %v",
-                fromRoom, err)
-        }
-        if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
-            log.Printf("Warning: Failed to join room %s: %v",
-                toRoom, err)
-        }
-    }
+		// Join rooms
+		if joined, err := isRoomJoined(ctx, fromClient, fromRoom); err != nil {
+			log.Printf("Warning: Failed to check room %s: %v", fromRoom, err)
+		} else if !joined {
+			if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
+				log.Printf("Warning: Failed to join room %s: %v", fromRoom, err)
+			} else {
+				log.Printf("Successfully joined room %s", fromRoom)
+			}
+		}
+
+		if joined, err := isRoomJoined(ctx, toClient, toRoom); err != nil {
+			log.Printf("Warning: Failed to check room %s: %v", toRoom, err)
+		} else if !joined {
+			if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
+				log.Printf("Warning: Failed to join room %s: %v", toRoom, err)
+			} else {
+				log.Printf("Successfully joined room %s", toRoom)
+			}
+		}
+
+		// After joining rooms, set nicknames and avatars
+		log.Println("Setting room profiles (nicknames and avatars)...")
+		processRoomLinks(ctx, clients, config.Links)
+
+
+	}
 
     // Start sync for all clients
     log.Println("Starting sync for all clients")
