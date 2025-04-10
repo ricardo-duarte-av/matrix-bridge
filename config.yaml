@@ -1,0 +1,25 @@
+servers:
+
+  - name: "servera.com"
+    url: "https://matrix.servera.com"
+    user: "@usera:servera.com"
+    password: "passworda"
+
+  - name: "serverb.com"
+    url: "https://matrix.serverb.com"
+    user: "@userb:serverb.com"
+    password: "passwordb"
+
+#  - name: "serverc"
+#    url: "https://matrix.serverc.com"
+#    user: "@userc:serverc.com"
+#    password: "passwordc"
+
+room_links:
+
+  - from: "!room1:servera.com"
+    to: "!room1:serverb.com"
+
+  - from: "!room2:serverb.com"
+    to: "!room2:servera.com"
+
