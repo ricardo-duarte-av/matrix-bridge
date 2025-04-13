@@ -52,13 +52,12 @@ type Link struct {
 
 // Message mapping struct
 type MessageMapping struct {
-    SourceEventID  string
-    TargetEventID  string
-    SourceRoomID   string
-    TargetRoomID   string
-    CreatedAt      time.Time
+    SourceEventID string
+    TargetEventID string
+    SourceRoomID  string
+    TargetRoomID  string
+    CreatedAt     time.Time
 }
-
 
 
 // PerMessageProfile structure
@@ -83,53 +82,53 @@ type ClientSync struct {
 
 // Room nicname and avatar functions
 func setRoomProfile(ctx context.Context, client *mautrix.Client, roomID id.RoomID, nickname, avatar string) error {
-	// Fetch the current membership event for the user in this room
-	userID := client.UserID
-	var membershipEvent event.MemberEventContent
-	err := client.StateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
-	if err != nil {
-		return fmt.Errorf("failed to fetch membership event for room %s: %w", roomID, err)
-	}
+        // Fetch the current membership event for the user in this room
+        userID := client.UserID
+        var membershipEvent event.MemberEventContent
+        err := client.StateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
+        if err != nil {
+                return fmt.Errorf("failed to fetch membership event for room %s: %w", roomID, err)
+        }
 
-	// Check if nickname needs to be updated
-	needsUpdate := false
-	if nickname != "" && membershipEvent.Displayname != nickname {
-		log.Printf("Updating nickname in room %s from '%s' to '%s'", roomID, membershipEvent.Displayname, nickname)
-		membershipEvent.Displayname = nickname
-		needsUpdate = true
-	} else if nickname != "" {
-		log.Printf("Nickname in room %s is already '%s', no update needed", roomID, nickname)
-	}
+        // Check if nickname needs to be updated
+        needsUpdate := false
+        if nickname != "" && membershipEvent.Displayname != nickname {
+                log.Printf("Updating nickname in room %s from '%s' to '%s'", roomID, membershipEvent.Displayname, nickname)
+                membershipEvent.Displayname = nickname
+                needsUpdate = true
+        } else if nickname != "" {
+                log.Printf("Nickname in room %s is already '%s', no update needed", roomID, nickname)
+        }
 
-	// Check if avatar needs to be updated
-	if avatar != "" {
-		avatarURI, err := id.ParseContentURI(avatar) // Parse the avatar string into id.ContentURI
-		if err != nil {
-			return fmt.Errorf("failed to parse avatar URI '%s': %w", avatar, err)
-		}
-		avatarString := avatarURI.CUString() // Convert id.ContentURI to id.ContentURIString
-		if membershipEvent.AvatarURL != avatarString {
-			log.Printf("Updating avatar in room %s from '%s' to '%s'", roomID, membershipEvent.AvatarURL, avatarString)
-			membershipEvent.AvatarURL = avatarString
-			needsUpdate = true
-		} else {
-			log.Printf("Avatar in room %s is already '%s', no update needed", roomID, avatarString)
-		}
-	}
+        // Check if avatar needs to be updated
+        if avatar != "" {
+                avatarURI, err := id.ParseContentURI(avatar) // Parse the avatar string into id.ContentURI
+                if err != nil {
+                        return fmt.Errorf("failed to parse avatar URI '%s': %w", avatar, err)
+                }
+                avatarString := avatarURI.CUString() // Convert id.ContentURI to id.ContentURIString
+                if membershipEvent.AvatarURL != avatarString {
+                        log.Printf("Updating avatar in room %s from '%s' to '%s'", roomID, membershipEvent.AvatarURL, avatarString)
+                        membershipEvent.AvatarURL = avatarString
+                        needsUpdate = true
+                } else {
+                        log.Printf("Avatar in room %s is already '%s', no update needed", roomID, avatarString)
+                }
+        }
 
-	// If no changes are needed, skip the update
-	if !needsUpdate {
-		log.Printf("No changes needed for room %s, skipping update", roomID)
-		return nil
-	}
+        // If no changes are needed, skip the update
+        if !needsUpdate {
+                log.Printf("No changes needed for room %s, skipping update", roomID)
+                return nil
+        }
 
-	// Send the updated membership event
-	resp, err := client.SendStateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
-	if err != nil {
-		return fmt.Errorf("failed to send updated membership event for room %s: %w", roomID, err)
-	}
-	log.Printf("Successfully updated profile for room %s (nickname: '%s', avatar: '%s'), response: %+v", roomID, nickname, avatar, resp)
-	return nil
+        // Send the updated membership event
+        resp, err := client.SendStateEvent(ctx, roomID, event.StateMember, userID.String(), &membershipEvent)
+        if err != nil {
+                return fmt.Errorf("failed to send updated membership event for room %s: %w", roomID, err)
+        }
+        log.Printf("Successfully updated profile for room %s (nickname: '%s', avatar: '%s'), response: %+v", roomID, nickname, avatar, resp)
+        return nil
 }
 
 
@@ -178,6 +177,14 @@ func storeMessageMapping(db *sql.DB, mapping MessageMapping) error {
         mapping.SourceRoomID,
         mapping.TargetRoomID,
         mapping.CreatedAt)
+
+    if err != nil {
+        log.Printf("Error storing message mapping: %v", err)
+    } else {
+        log.Printf("Stored message mapping: %+v", mapping)
+    }
+
+
     return err
 }
 
@@ -196,8 +203,14 @@ func getMappedEventID(db *sql.DB, sourceEventID id.EventID, sourceRoom id.RoomID
         targetRoom.String()).Scan(&targetEventID)
 
     if err == sql.ErrNoRows {
+        log.Printf("No mapping found for sourceEventID: %s, sourceRoom: %s, targetRoom: %s", sourceEventID, sourceRoom, targetRoom)
         return "", nil
+    } else if err != nil {
+        log.Printf("Error retrieving mapping for sourceEventID: %s, sourceRoom: %s, targetRoom: %s. Error: %v", sourceEventID, sourceRoom, targetRoom, err)
+    } else {
+        log.Printf("Retrieved mapping: sourceEventID=%s, targetEventID=%s, sourceRoom=%s, targetRoom=%s", sourceEventID, targetEventID, sourceRoom, targetRoom)
     }
+
     return targetEventID, err
 }
 
@@ -320,11 +333,14 @@ func getClientForUser(user string, clients map[string]*mautrix.Client) *mautrix.
 
 func getMessageMapping(db *sql.DB, sourceEventID id.EventID) (MessageMapping, error) {
     var mapping MessageMapping
-    err := db.QueryRow(`
+
+    // Query the database for the message mapping
+    query := `
         SELECT source_event_id, target_event_id, source_room_id, target_room_id, created_at
         FROM message_mappings
         WHERE source_event_id = ?
-    `, sourceEventID).Scan(
+    `
+    err := db.QueryRow(query, sourceEventID).Scan(
         &mapping.SourceEventID,
         &mapping.TargetEventID,
         &mapping.SourceRoomID,
@@ -333,10 +349,17 @@ func getMessageMapping(db *sql.DB, sourceEventID id.EventID) (MessageMapping, er
     )
 
     if err != nil {
+        // Handle cases where no mapping is found
+        if err == sql.ErrNoRows {
+            return MessageMapping{}, fmt.Errorf("no message mapping found for sourceEventID: %s", sourceEventID)
+        }
+        // Handle other database errors
         return MessageMapping{}, fmt.Errorf("failed to get message mapping: %v", err)
     }
+
     return mapping, nil
 }
+
 
 func deleteMessageMapping(db *sql.DB, sourceEventID id.EventID) error {
     _, err := db.Exec(`
@@ -354,16 +377,22 @@ func deleteMessageMapping(db *sql.DB, sourceEventID id.EventID) error {
 
 // Helper function to update reply fallback in formatted body
 func updateReplyFallback(formattedBody, originalSender, originalBody string) string {
-    // Find the reply fallback block (everything between first <mx-reply> tags)
-    replyStart := strings.Index(formattedBody, "<mx-reply>")
-    replyEnd := strings.Index(formattedBody, "</mx-reply>")
+    log.Printf("updateReplyFallback called with:")
+    log.Printf("formattedBody: %s", formattedBody)
+    log.Printf("originalSender: %s", originalSender)
+    log.Printf("originalBody: %s", originalBody)
 
-    if replyStart == -1 || replyEnd == -1 {
+    // Use the HTMLReplyFallbackRegex to find the <mx-reply> block
+    replyMatch := event.HTMLReplyFallbackRegex.FindStringIndex(formattedBody)
+    if replyMatch == nil {
+        log.Printf("No <mx-reply> block found in formattedBody.")
         return formattedBody
     }
 
     // Extract the actual message content (after </mx-reply>)
-    messageContent := formattedBody[replyEnd+11:] // 11 is length of "</mx-reply>"
+    replyEnd := replyMatch[1] // End of the match
+    messageContent := formattedBody[replyEnd:]
+    log.Printf("Extracted messageContent: %s", messageContent)
 
     // Create new reply fallback
     replyFallback := fmt.Sprintf(
@@ -371,8 +400,12 @@ func updateReplyFallback(formattedBody, originalSender, originalBody string) str
         html.EscapeString(originalSender),
         html.EscapeString(originalBody),
     )
+    log.Printf("Constructed replyFallback: %s", replyFallback)
 
-    return replyFallback + messageContent
+    finalBody := replyFallback + messageContent
+    log.Printf("Final updated formattedBody: %s", finalBody)
+
+    return finalBody
 }
 
 
@@ -396,231 +429,123 @@ func getUserProfile(ctx context.Context, client *mautrix.Client, userID id.UserI
 // MSG Handlers
 //
 
-
 func handleMessageEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
     roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
 
-    // Skip messages from before app start
+    // Log the incoming event for debugging purposes
+    log.Printf("Processing message event: %v", evt)
+
+    // Step 1: Skip messages that are from before the bot started
     if !isEventAfterStartTime(evt) {
+        log.Printf("Skipping event from before app start: %v", evt.ID)
         return
     }
 
+    // Step 2: Check if the event's room is linked to another room
     if targetRoom, ok := roomLinks[evt.RoomID]; ok {
+        log.Printf("Found target room for event: %s -> %s", evt.RoomID, targetRoom)
+
+        // Get the target client for sending messages to the linked room
         targetClient := roomClients[targetRoom]
 
+        // Step 3: Ensure the event is not sent by the bot itself
         if evt.Sender != client.UserID {
             content := evt.Content.AsMessage()
-            log.Printf("Processing message event in room %s", evt.RoomID)
+            log.Printf("Processing content: %v", content)
 
-            // Get sender's profile for per_message_profile
-            profile, err := getUserProfile(ctx, client, evt.Sender)
-            if err != nil {
-                log.Printf("Error getting user profile: %v", err)
-                // Continue anyway, as profile is optional
+            // Step 4: Handle replies (messages with m.relates_to and m.in_reply_to)
+            if content.RelatesTo != nil && content.RelatesTo.InReplyTo != nil {
+                log.Printf("Detected a reply message: relatesTo=%v", content.RelatesTo)
+
+                // Extract the original event ID being replied to
+                originalEventID := content.RelatesTo.InReplyTo.EventID
+                log.Printf("Original event ID: %s", originalEventID)
+
+                // Fetch the mapping for the bridged event in the destination room
+                bridgedMessage, err := getMessageMapping(db, id.EventID(originalEventID))
+                if err != nil {
+                    log.Printf("Error fetching bridged message: %v", err)
+                } else {
+                    log.Printf("Fetched bridged message: %+v", bridgedMessage)
+
+                    // Update the m.relates_to field with the destination event ID
+                    content.RelatesTo.InReplyTo.EventID = id.EventID(bridgedMessage.TargetEventID)
+                    log.Printf("Updated m.relates_to with target event ID: %s", bridgedMessage.TargetEventID)
+                }
             }
 
-            // Check if this is an edit
-            if content.NewContent != nil && content.RelatesTo != nil &&
-               content.RelatesTo.Type == event.RelReplace {
-
-                // Get the original message mapping
-                targetEventID, err := getMappedEventID(db, content.RelatesTo.EventID, evt.RoomID, targetRoom)
-                if err != nil {
-                    log.Printf("Error getting mapped event ID for edit: %v", err)
-                    return
-                }
-                if targetEventID == "" {
-                    log.Printf("Could not find mapped event ID for edit")
-                    return
-                }
-
-                // Create edit content
-                editContent := map[string]interface{}{
-                    "msgtype": content.NewContent.MsgType,
-                    "body":    content.NewContent.Body,
-                    "m.relates_to": map[string]interface{}{
-                        "rel_type": event.RelReplace,
-                        "event_id": targetEventID,
-                    },
-                }
-
-                if content.NewContent.FormattedBody != "" {
-                    editContent["formatted_body"] = content.NewContent.FormattedBody
-                    editContent["format"] = content.NewContent.Format
-                }
-
-                // Add profile information
-                if profile != nil {
-                    editContent["com.beeper.per_message_profile"] = profile
-                }
-
-                // Send the edit
-                resp, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, editContent)
-                if err != nil {
-                    log.Printf("Error sending edit: %v", err)
-                    return
-                }
-
-                // Store mapping for the edit
-                err = storeMessageMapping(db, MessageMapping{
-                    SourceEventID: evt.ID.String(),
-                    TargetEventID: resp.EventID.String(),
-                    SourceRoomID:  evt.RoomID.String(),
-                    TargetRoomID:  targetRoom.String(),
-                    CreatedAt:     time.Now().UTC(),
-                })
-                if err != nil {
-                    log.Printf("Error storing edit mapping: %v", err)
-                }
-                return
-            }
-
-            // Handle media messages
+            // Step 5: Handle media messages (images, videos, audio, files)
             if content.MsgType == event.MsgImage || content.MsgType == event.MsgVideo ||
-               content.MsgType == event.MsgAudio || content.MsgType == event.MsgFile {
+                content.MsgType == event.MsgAudio || content.MsgType == event.MsgFile {
 
-                // Download media from source
+                log.Printf("Processing media message: %s", content.URL)
+
+                // Download media from the source
                 mxc := content.URL
                 if mxc == "" {
-                    log.Printf("No URL found in media message")
+                    log.Printf("No URL found in media message.")
                     return
                 }
 
-                // Parse MXC URL
                 parsedMXC, err := id.ParseContentURI(string(mxc))
                 if err != nil {
                     log.Printf("Error parsing MXC URL: %v", err)
                     return
                 }
 
-                // Download file
+                // Download the file
                 data, err := client.DownloadBytes(ctx, parsedMXC)
                 if err != nil {
                     log.Printf("Error downloading media: %v", err)
                     return
                 }
 
-                // Upload to target server
-                resp, err := targetClient.UploadBytes(ctx, data, content.Info.MimeType)
+                // Example: Upload the downloaded media to the target room
+                log.Printf("Successfully downloaded media, uploading to target room.")
+                uploadResp, err := targetClient.UploadBytes(ctx, data, "application/octet-stream")
                 if err != nil {
-                    log.Printf("Error uploading media: %v", err)
+                    log.Printf("Error uploading media to target room: %v", err)
                     return
                 }
 
-                // Get sender's profile
-                profile, err := getUserProfile(ctx, client, evt.Sender)
-                if err != nil {
-                    log.Printf("Error getting user profile: %v", err)
-                    // Continue anyway as profile is optional
-                }
-
-                // Create content map preserving all original metadata
-                contentMap := map[string]interface{}{
-                    "body":    content.Body,
-                    "msgtype": content.MsgType,
-                    "url":     resp.ContentURI.CUString(),
-                }
-
-                // Preserve all original info fields
-                if content.Info != nil {
-                    info := make(map[string]interface{})
-
-                    // Copy basic info fields
-                    if content.Info.Height != 0 {
-                        info["h"] = content.Info.Height
-                    }
-                    if content.Info.Width != 0 {
-                        info["w"] = content.Info.Width
-                    }
-                    if content.Info.Size != 0 {
-                        info["size"] = content.Info.Size
-                    }
-                    if content.Info.MimeType != "" {
-                        info["mimetype"] = content.Info.MimeType
-                    }
-
-                    // Copy any additional fields from raw content
-                    if rawContent, ok := evt.Content.Raw["info"].(map[string]interface{}); ok {
-                        for k, v := range rawContent {
-                            if _, exists := info[k]; !exists {
-                                info[k] = v
-                            }
-                        }
-                    }
-
-                    contentMap["info"] = info
-                }
-
-                // Add profile information
-                if profile != nil {
-                    contentMap["com.beeper.per_message_profile"] = profile
-                }
-
-                // Copy any m.mentions if present
-                if mentions, ok := evt.Content.Raw["m.mentions"].(map[string]interface{}); ok {
-                    contentMap["m.mentions"] = mentions
-                }
-
-                // Send the message
-                resp2, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, contentMap)
-                if err != nil {
-                    log.Printf("Error forwarding media message: %v", err)
-                    return
-                }
-
-                // Store the message mapping
-                err = storeMessageMapping(db, MessageMapping{
-                    SourceEventID: evt.ID.String(),
-                    TargetEventID: resp2.EventID.String(),
-                    SourceRoomID:  evt.RoomID.String(),
-                    TargetRoomID:  targetRoom.String(),
-                    CreatedAt:     time.Now().UTC(),
-                })
-                if err != nil {
-                    log.Printf("Error storing message mapping: %v", err)
-                }
-                return
+                // Update the message content with the new media URL
+                content.URL = id.ContentURIString(uploadResp.ContentURI.String()) // Convert ContentURI to ContentURIString
+                log.Printf("Media uploaded successfully: %s", content.URL)
             }
 
-            // Create base content map
-            contentMap := map[string]interface{}{
-                "msgtype": content.MsgType,
-                "body":    content.Body,
-            }
-
-            // Add formatted body if present
-            if content.FormattedBody != "" {
-                contentMap["formatted_body"] = content.FormattedBody
-                contentMap["format"] = content.Format
-            }
-
-            // Add profile information
-            if profile != nil {
-                contentMap["com.beeper.per_message_profile"] = profile
-            }
-
-            // Send the message
-            resp, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, contentMap)
+            // Step 6: Forward the processed message to the target room
+            log.Printf("Forwarding message from %s to %s.", evt.RoomID, targetRoom)
+            sentEvent, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, content)
             if err != nil {
                 log.Printf("Error forwarding message: %v", err)
+                return
+            }
+            log.Printf("Message forwarded successfully. SourceEventID=%s, TargetEventID=%s", evt.ID, sentEvent.EventID)
+
+            // Step 7: Store the event mapping for the bridged message
+            mapping := MessageMapping{
+                SourceEventID: evt.ID.String(),
+                TargetEventID: sentEvent.EventID.String(),
+                SourceRoomID:  evt.RoomID.String(),
+                TargetRoomID:  targetRoom.String(),
+                CreatedAt:     time.Now(),
+            }
+            err = storeMessageMapping(db, mapping)
+            if err != nil {
+                log.Printf("Error storing message mapping: %v", err)
             } else {
-                log.Printf("Successfully forwarded message to %s with event ID %s", targetRoom, resp.EventID)
-                // Store the message mapping
-                mapping := MessageMapping{
-                    SourceEventID: evt.ID.String(),
-                    TargetEventID: resp.EventID.String(),
-                    SourceRoomID:  evt.RoomID.String(),
-                    TargetRoomID:  targetRoom.String(),
-                    CreatedAt:     time.Now().UTC(),
-                }
-                err = storeMessageMapping(db, mapping)
-                if err != nil {
-                    log.Printf("Error storing message mapping: %v", err)
-                }
+                log.Printf("Message mapping stored successfully: %+v", mapping)
             }
         }
+    } else {
+        log.Printf("No target room linked for event in room %s.", evt.RoomID)
     }
 }
+
+
+
+
+
 
 func handleReactionEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
     roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
@@ -886,55 +811,55 @@ func main() {
     roomLinks := make(map[id.RoomID]id.RoomID)     // from -> to
     roomClients := make(map[id.RoomID]*mautrix.Client) // room -> client
 
-	// Process room links and build mappings
-	for i, link := range config.Links {
-		fromRoom := id.RoomID(link.From)
-		toRoom := id.RoomID(link.To)
+        // Process room links and build mappings
+        for i, link := range config.Links {
+                fromRoom := id.RoomID(link.From)
+                toRoom := id.RoomID(link.To)
 
-		log.Printf("Processing link %d: %s (%s) -> %s (%s)",
-			i+1, fromRoom, link.FromUser, toRoom, link.ToUser)
+                log.Printf("Processing link %d: %s (%s) -> %s (%s)",
+                        i+1, fromRoom, link.FromUser, toRoom, link.ToUser)
 
-		// Get the clients for the specified users
-		fromClient := getClientForUser(link.FromUser, clients)
-		toClient := getClientForUser(link.ToUser, clients)
+                // Get the clients for the specified users
+                fromClient := getClientForUser(link.FromUser, clients)
+                toClient := getClientForUser(link.ToUser, clients)
 
-		if fromClient == nil || toClient == nil {
-			log.Printf("Error: Could not find client for one of the users in link %d", i+1)
-			continue
-		}
+                if fromClient == nil || toClient == nil {
+                        log.Printf("Error: Could not find client for one of the users in link %d", i+1)
+                        continue
+                }
 
-		// Store mappings
-		roomLinks[fromRoom] = toRoom
-		roomClients[fromRoom] = fromClient
-		roomClients[toRoom] = toClient
+                // Store mappings
+                roomLinks[fromRoom] = toRoom
+                roomClients[fromRoom] = fromClient
+                roomClients[toRoom] = toClient
 
-		// Join rooms
-		if joined, err := isRoomJoined(ctx, fromClient, fromRoom); err != nil {
-			log.Printf("Warning: Failed to check room %s: %v", fromRoom, err)
-		} else if !joined {
-			if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
-				log.Printf("Warning: Failed to join room %s: %v", fromRoom, err)
-			} else {
-				log.Printf("Successfully joined room %s", fromRoom)
-			}
-		}
+                // Join rooms
+                if joined, err := isRoomJoined(ctx, fromClient, fromRoom); err != nil {
+                        log.Printf("Warning: Failed to check room %s: %v", fromRoom, err)
+                } else if !joined {
+                        if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
+                                log.Printf("Warning: Failed to join room %s: %v", fromRoom, err)
+                        } else {
+                                log.Printf("Successfully joined room %s", fromRoom)
+                        }
+                }
 
-		if joined, err := isRoomJoined(ctx, toClient, toRoom); err != nil {
-			log.Printf("Warning: Failed to check room %s: %v", toRoom, err)
-		} else if !joined {
-			if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
-				log.Printf("Warning: Failed to join room %s: %v", toRoom, err)
-			} else {
-				log.Printf("Successfully joined room %s", toRoom)
-			}
-		}
+                if joined, err := isRoomJoined(ctx, toClient, toRoom); err != nil {
+                        log.Printf("Warning: Failed to check room %s: %v", toRoom, err)
+                } else if !joined {
+                        if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
+                                log.Printf("Warning: Failed to join room %s: %v", toRoom, err)
+                        } else {
+                                log.Printf("Successfully joined room %s", toRoom)
+                        }
+                }
 
-		// After joining rooms, set nicknames and avatars
-		log.Println("Setting room profiles (nicknames and avatars)...")
-		processRoomLinks(ctx, clients, config.Links)
+                // After joining rooms, set nicknames and avatars
+                log.Println("Setting room profiles (nicknames and avatars)...")
+                processRoomLinks(ctx, clients, config.Links)
 
 
-	}
+        }
 
     // Start sync for all clients
     log.Println("Starting sync for all clients")
