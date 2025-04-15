@@ -3,6 +3,7 @@ package main
 import (
     "context"
     "database/sql"
+    "encoding/json"
     "fmt"
     "log"
     "os"
@@ -430,117 +431,155 @@ func getUserProfile(ctx context.Context, client *mautrix.Client, userID id.UserI
 //
 
 func handleMessageEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
-    roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
+        roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
 
-    // Log the incoming event for debugging purposes
-    log.Printf("Processing message event: %v", evt)
+        // Log the incoming event for debugging purposes
+        //log.Printf("Processing message event: %v", evt)
 
-    // Step 1: Skip messages that are from before the bot started
-    if !isEventAfterStartTime(evt) {
-        log.Printf("Skipping event from before app start: %v", evt.ID)
-        return
-    }
+        // Step 1: Check if the event's room is linked to another room
+        if targetRoom, ok := roomLinks[evt.RoomID]; ok {
 
-    // Step 2: Check if the event's room is linked to another room
-    if targetRoom, ok := roomLinks[evt.RoomID]; ok {
-        log.Printf("Found target room for event: %s -> %s", evt.RoomID, targetRoom)
+                log.Printf("==================================================================================================================================================================================================")
+                // Step 2: Check if the event is from before the bot started
+                if !isEventAfterStartTime(evt) {
+                        //log.Printf("Event is from before bot start time: %v", evt.ID)
 
-        // Get the target client for sending messages to the linked room
-        targetClient := roomClients[targetRoom]
+                        // Add the event to the mapping table but do not bridge it
+                        mapping := MessageMapping{
+                                SourceEventID: evt.ID.String(),
+                                //TargetEventID: sentEvent.EventID.String(),
+                                SourceRoomID:  evt.RoomID.String(),
+                                TargetRoomID:  targetRoom.String(),
+                                CreatedAt:     time.Now(),
 
-        // Step 3: Ensure the event is not sent by the bot itself
-        if evt.Sender != client.UserID {
-            content := evt.Content.AsMessage()
-            log.Printf("Processing content: %v", content)
-
-            // Step 4: Handle replies (messages with m.relates_to and m.in_reply_to)
-            if content.RelatesTo != nil && content.RelatesTo.InReplyTo != nil {
-                log.Printf("Detected a reply message: relatesTo=%v", content.RelatesTo)
-
-                // Extract the original event ID being replied to
-                originalEventID := content.RelatesTo.InReplyTo.EventID
-                log.Printf("Original event ID: %s", originalEventID)
-
-                // Fetch the mapping for the bridged event in the destination room
-                bridgedMessage, err := getMessageMapping(db, id.EventID(originalEventID))
-                if err != nil {
-                    log.Printf("Error fetching bridged message: %v", err)
-                } else {
-                    log.Printf("Fetched bridged message: %+v", bridgedMessage)
-
-                    // Update the m.relates_to field with the destination event ID
-                    content.RelatesTo.InReplyTo.EventID = id.EventID(bridgedMessage.TargetEventID)
-                    log.Printf("Updated m.relates_to with target event ID: %s", bridgedMessage.TargetEventID)
-                }
-            }
-
-            // Step 5: Handle media messages (images, videos, audio, files)
-            if content.MsgType == event.MsgImage || content.MsgType == event.MsgVideo ||
-                content.MsgType == event.MsgAudio || content.MsgType == event.MsgFile {
-
-                log.Printf("Processing media message: %s", content.URL)
-
-                // Download media from the source
-                mxc := content.URL
-                if mxc == "" {
-                    log.Printf("No URL found in media message.")
-                    return
+                        }
+                        err := storeMessageMapping(db, mapping)
+                        if err != nil {
+                                log.Printf("ANCIENT: Error storing message mapping for pre-start event: %v", err)
+                        } else {
+                                log.Printf("ANCIENT: Stored pre-start event mapping successfully: %+v", mapping)
+                        }
+                        return
                 }
 
-                parsedMXC, err := id.ParseContentURI(string(mxc))
-                if err != nil {
-                    log.Printf("Error parsing MXC URL: %v", err)
-                    return
+                log.Printf("Found target room for event: %s -> %s", evt.RoomID, targetRoom)
+
+                // Get the target client for sending messages to the linked room
+                targetClient := roomClients[targetRoom]
+
+                // Step 3: Ensure the event is not sent by the bot itself
+                if evt.Sender != client.UserID {
+                        content := evt.Content.AsMessage()
+                        log.Printf("Processing content: %v", content)
+
+                        // Step 4: Handle threads and replies
+                        if content.RelatesTo != nil {
+                                log.Printf("Detected related message: relates_to=%v", content.RelatesTo)
+
+                                // Step 4.1: Map the related event ID
+                                relatedEventID := content.RelatesTo.EventID
+                                bridgedEvent, err := getMessageMapping(db, id.EventID(relatedEventID))
+                                if err != nil {
+                                        log.Printf("Error fetching mapping for related event %s: %v", relatedEventID, err)
+                                        return
+                                }
+
+                                if bridgedEvent.TargetEventID == "" {
+                                        log.Printf("No mapping found for related event %s in destination room.", relatedEventID)
+                                        return
+                                }
+
+                                // Step 4.2: Update the related event ID to the mapped event ID in the destination room
+                                content.RelatesTo.EventID = id.EventID(bridgedEvent.TargetEventID)
+                                if content.RelatesTo.InReplyTo != nil {
+                                        content.RelatesTo.InReplyTo.EventID = id.EventID(bridgedEvent.TargetEventID)
+                                }
+                                log.Printf("Updated related event ID to %s", bridgedEvent.TargetEventID)
+                        }
+
+                        // Step 5: Serialize the message content to JSON
+                        contentBytes, err := json.Marshal(content)
+                        if err != nil {
+                                log.Printf("Error serializing message content: %v", err)
+                                return
+                        }
+
+                        // Step 6: Deserialize the JSON into a map
+                        var contentMap map[string]interface{}
+                        if err := json.Unmarshal(contentBytes, &contentMap); err != nil {
+                                log.Printf("Error deserializing message content to map: %v", err)
+                                return
+                        }
+
+                        // Step 7: Fetch the sender's profile (avatar URL and display name)
+                        displayName, avatarURL, err := fetchSenderProfile(ctx, client, evt.Sender)
+                        if err != nil {
+                                log.Printf("Error fetching sender profile for %s: %v", evt.Sender, err)
+                                displayName = "Matrix-Bridge"
+                                avatarURL = "mxc://aguiarvieira.pt/4c65be941db57740194d5b323ef7e81cafafa7141911847812484575232"
+                        }
+                        log.Printf("Fetched sender profile: displayName=%s, avatarURL=%s", displayName, avatarURL)
+
+                        // Step 8: Add the per-message profile metadata
+                        contentMap["com.beeper.per_message_profile"] = map[string]interface{}{
+                                "avatar_url":  avatarURL,
+                                "displayname": displayName,
+                                "id":          evt.Sender.String(),
+                        }
+                        log.Printf("Added per-message profile to content: %+v", contentMap)
+
+                        // Step 9: Forward the processed message to the target room
+                        log.Printf("Forwarding message from %s to %s.", evt.RoomID, targetRoom)
+                        sentEvent, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, contentMap)
+                        if err != nil {
+                                log.Printf("Error forwarding message: %v", err)
+                                return
+                        }
+                        log.Printf("Message forwarded successfully. SourceEventID=%s, TargetEventID=%s", evt.ID, sentEvent.EventID)
+
+                        // Step 10: Store the event mapping for the bridged message
+                        mapping := MessageMapping{
+                                SourceEventID: evt.ID.String(),
+                                TargetEventID: sentEvent.EventID.String(),
+                                SourceRoomID:  evt.RoomID.String(),
+                                TargetRoomID:  targetRoom.String(),
+                                CreatedAt:     time.Now(),
+                        }
+                        err = storeMessageMapping(db, mapping)
+                        if err != nil {
+                                log.Printf("Error storing message mapping: %v", err)
+                        } else {
+                                log.Printf("Message mapping stored successfully: %+v", mapping)
+                        }
                 }
-
-                // Download the file
-                data, err := client.DownloadBytes(ctx, parsedMXC)
-                if err != nil {
-                    log.Printf("Error downloading media: %v", err)
-                    return
-                }
-
-                // Example: Upload the downloaded media to the target room
-                log.Printf("Successfully downloaded media, uploading to target room.")
-                uploadResp, err := targetClient.UploadBytes(ctx, data, "application/octet-stream")
-                if err != nil {
-                    log.Printf("Error uploading media to target room: %v", err)
-                    return
-                }
-
-                // Update the message content with the new media URL
-                content.URL = id.ContentURIString(uploadResp.ContentURI.String()) // Convert ContentURI to ContentURIString
-                log.Printf("Media uploaded successfully: %s", content.URL)
-            }
-
-            // Step 6: Forward the processed message to the target room
-            log.Printf("Forwarding message from %s to %s.", evt.RoomID, targetRoom)
-            sentEvent, err := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, content)
-            if err != nil {
-                log.Printf("Error forwarding message: %v", err)
-                return
-            }
-            log.Printf("Message forwarded successfully. SourceEventID=%s, TargetEventID=%s", evt.ID, sentEvent.EventID)
-
-            // Step 7: Store the event mapping for the bridged message
-            mapping := MessageMapping{
-                SourceEventID: evt.ID.String(),
-                TargetEventID: sentEvent.EventID.String(),
-                SourceRoomID:  evt.RoomID.String(),
-                TargetRoomID:  targetRoom.String(),
-                CreatedAt:     time.Now(),
-            }
-            err = storeMessageMapping(db, mapping)
-            if err != nil {
-                log.Printf("Error storing message mapping: %v", err)
-            } else {
-                log.Printf("Message mapping stored successfully: %+v", mapping)
-            }
-        }
-    } else {
-        log.Printf("No target room linked for event in room %s.", evt.RoomID)
-    }
+        } //else {
+        //      log.Printf("No target room linked for event in room %s.", evt.RoomID)
+        //}
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// fetchSenderProfile fetches the display name and avatar URL of the sender
+func fetchSenderProfile(ctx context.Context, client *mautrix.Client, sender id.UserID) (string, string, error) {
+    profile, err := client.GetProfile(ctx, sender)
+    if err != nil {
+        return "", "", fmt.Errorf("failed to fetch profile for sender %s: %w", sender, err)
+    }
+    return profile.DisplayName, profile.AvatarURL.String(), nil
+}
+
 
 
 
