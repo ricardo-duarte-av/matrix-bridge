@@ -23,6 +23,9 @@ import (
 // Add at the top of the file with other global variables
 var appStartTime time.Time
 
+// Global processed events cache
+var processedEventCache *ProcessedEventsCache
+
 
 // Config represents the structure of the configuration file.
 type Config struct {
@@ -558,19 +561,6 @@ func handleMessageEvent(ctx context.Context, evt *event.Event, client *mautrix.C
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 // fetchSenderProfile fetches the display name and avatar URL of the sender
 func fetchSenderProfile(ctx context.Context, client *mautrix.Client, sender id.UserID) (string, string, error) {
     profile, err := client.GetProfile(ctx, sender)
@@ -584,8 +574,7 @@ func fetchSenderProfile(ctx context.Context, client *mautrix.Client, sender id.U
 
 
 
-
-
+// Reactions
 func handleReactionEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
     roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
 
@@ -669,7 +658,7 @@ func handleReactionEvent(ctx context.Context, evt *event.Event, client *mautrix.
 }
 
 
-
+// Redactions
 func handleRedactionEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
     roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
 
@@ -703,6 +692,99 @@ func handleRedactionEvent(ctx context.Context, evt *event.Event, client *mautrix
 }
 
 
+//Membership events like joins, leaves, nick or pfp change
+func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Client,
+    roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, processedEventCache *ProcessedEventsCache) {
+
+    // Check for duplicate events
+    if processedEventCache.Contains(string(evt.ID)) {
+        log.Printf("[%s] Skipping already processed event: %s", client.UserID, evt.ID)
+        return
+    }
+    processedEventCache.Add(string(evt.ID))
+
+
+    // Ignore events from before the application started
+    if !isEventAfterStartTime(evt) {
+        //log.Printf("[%s] ANCIENT: membership event from before app start: %v", client.UserID, evt.ID)
+        return
+    }
+
+    if targetRoom, ok := roomLinks[evt.RoomID]; ok {
+        targetClient := roomClients[targetRoom]
+        log.Printf("==================================================================================================================================================================================================")
+
+        // Safely check if evt.Content is valid by ensuring VeryRaw is not empty
+        var content *event.MemberEventContent
+        if len(evt.Content.VeryRaw) > 0 {
+            content = evt.Content.AsMember()
+        }
+        if content == nil {
+            log.Printf("[%s] Invalid or nil content for event: %s", client.UserID, evt.ID)
+            return
+        }
+
+        // Safely check if evt.Unsigned.PrevContent is valid and can be converted to MemberEventContent
+        var prevContent *event.MemberEventContent
+        if evt.Unsigned.PrevContent != nil && len(evt.Unsigned.PrevContent.VeryRaw) > 0 {
+            prevContent = evt.Unsigned.PrevContent.AsMember()
+        }
+
+        var message string
+
+        // Check for join or leave events
+        if content.Membership == event.MembershipJoin && (prevContent == nil || prevContent.Membership != event.MembershipJoin) {
+            message = "Joined the room"
+            log.Printf("[%s] Got Join event", client.UserID)
+        } else if content.Membership == event.MembershipLeave && (prevContent == nil || prevContent.Membership != event.MembershipLeave) {
+            message = "Left the room"
+            log.Printf("[%s] Got Leave event", client.UserID)
+        } else {
+            // Check for profile changes (nickname or avatar)
+            if prevContent != nil && content.Displayname != prevContent.Displayname {
+                message = "Updated display name"
+                log.Printf("[%s] Got Displayname event", client.UserID)
+            } else if prevContent != nil && content.AvatarURL != prevContent.AvatarURL {
+                message = "Updated profile picture"
+                log.Printf("[%s] Got Profilepic event", client.UserID)
+            } else {
+                // Skip non-relevant membership updates
+                log.Printf("[%s] Got Unknown membership event: %s", client.UserID, content.Membership)
+                return
+            }
+        }
+
+        // Fetch the sender's profile (avatar URL and display name)
+        displayName, avatarURL, err := fetchSenderProfile(ctx, client, evt.Sender)
+        if err != nil {
+            log.Printf("[%s] Error fetching sender profile for %s: %v", client.UserID, evt.Sender, err)
+            displayName = "Matrix-Bridge"
+            avatarURL = "mxc://aguiarvieira.pt/4c65be941db57740194d5b323ef7e81cafafa7141911847812484575232"
+        }
+        log.Printf("[%s] Fetched sender profile: displayName=%s, avatarURL=%s", client.UserID, displayName, avatarURL)
+
+        // Construct message content
+        contentMap := map[string]interface{}{
+            "msgtype": "m.text",
+            "body":    message,
+            "com.beeper.per_message_profile": map[string]interface{}{
+                "avatar_url":  avatarURL,
+                "displayname": displayName,
+                "id":          evt.Sender.String(),
+            },
+        }
+        log.Printf("[%s] Constructed message content: %+v", client.UserID, contentMap)
+
+        // Send message to target room
+        _, sendErr := targetClient.SendMessageEvent(ctx, targetRoom, event.EventMessage, contentMap)
+        if sendErr != nil {
+            log.Printf("[%s] Error sending member event message to target room: %v", client.UserID, sendErr)
+        } else {
+            log.Printf("[%s] Successfully sent member event message for event ID=%s to room=%s", client.UserID, evt.ID, targetRoom)
+        }
+    }
+}
+
 
 
 
@@ -725,6 +807,12 @@ func registerEventHandlers(syncer *mautrix.DefaultSyncer, client *mautrix.Client
     syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
         handleRedactionEvent(ctx, evt, client, roomLinks, roomClients, db)
     })
+    // Handle membership events
+    log.Printf("Registering membership event handler for event type: %s", event.StateMember)
+    syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
+        handleMemberEvent(ctx, evt, client, roomLinks, roomClients, processedEventCache)
+    })
+
 }
 
 
@@ -798,6 +886,10 @@ func isEventAfterStartTime(evt *event.Event) bool {
 func main() {
     // Set application start time in UTC
     appStartTime = time.Now().UTC()
+
+    // Initialize the processed events cache
+    processedEventCache = NewProcessedEventsCache(1000)
+
 
     log.Printf("Matrix Room Bridge starting at %s", appStartTime.Format("2006-01-02 15:04:05"))
     log.Printf("Running as user: ricardo-duarte-av")
@@ -934,6 +1026,7 @@ func main() {
                                     event.EventMessage,
                                     event.EventReaction,
                                     event.EventRedaction,
+                                    event.StateMember, // Include membership events
                                 },
                             },
                             State: &mautrix.FilterPart{
