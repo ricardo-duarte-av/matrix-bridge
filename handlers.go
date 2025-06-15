@@ -401,7 +401,7 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
     if prevContent == nil {
         // True join event (prev_content is missing)
         if content.Membership == event.MembershipJoin {
-            message = "Joined the room"
+            message = fmt.Sprintf("🚪🏃‍➡️ %v Joined the room", evt.Sender)
         }
     } else {
         // Handle updates (prev_content exists)
@@ -410,11 +410,11 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
             displayNameChanged := content.Displayname != prevContent.Displayname
 
             if avatarChanged && displayNameChanged {
-                message = "Updated display name and profile picture"
+                message = fmt.Sprintf("😼 %v Updated display name and profile picture", evt.Sender)
             } else if displayNameChanged {
-                message = "Updated display name"
+                message = fmt.Sprintf("😼 %v Updated display name", evt.Sender)
             } else if avatarChanged {
-                message = "Updated profile picture"
+                message = fmt.Sprintf("😼 %v Updated profile picture", evt.Sender)
             }
 
             // If no relevant changes, skip the event
@@ -423,7 +423,7 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
             }
         } else if content.Membership == event.MembershipLeave {
             // Handle leave events
-            message = "Left the room"
+            message = fmt.Sprintf("🚪🏃 %v Left the room", evt.Sender)
         } else {
             // Unknown membership event
             return
@@ -440,7 +440,7 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
 
     // Construct the message content
     contentMap := map[string]interface{}{
-        "msgtype": "m.text",
+        "msgtype": "m.notice",
         "body":    message,
         "com.beeper.per_message_profile": map[string]interface{}{
             "avatar_url":  avatarURL,
