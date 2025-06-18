@@ -463,26 +463,31 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
 
 // Update your main function's event handler registrations to:
 func registerEventHandlers(syncer *mautrix.DefaultSyncer, client *mautrix.Client,
-    roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB) {
+    roomLinks map[id.RoomID]id.RoomID, roomClients map[id.RoomID]*mautrix.Client, db *sql.DB, roomChans map[id.RoomID]chan RoomEvent) {
 
     // Register event handlers for each client
     syncer.OnEventType(event.EventMessage, func(ctx context.Context, evt *event.Event) {
-        handleMessageEvent(ctx, evt, client, roomLinks, roomClients, db)
+        if ch, ok := roomChans[evt.RoomID]; ok {
+            ch <- RoomEvent{Ctx: ctx, Event: evt, Type: event.EventMessage}
+        }
     })
 
-    // Handle reaction events
     syncer.OnEventType(event.EventReaction, func(ctx context.Context, evt *event.Event) {
-        handleReactionEvent(ctx, evt, client, roomLinks, roomClients, db)
+        if ch, ok := roomChans[evt.RoomID]; ok {
+            ch <- RoomEvent{Ctx: ctx, Event: evt, Type: event.EventReaction}
+        }
     })
 
-    // Handle redaction events
     syncer.OnEventType(event.EventRedaction, func(ctx context.Context, evt *event.Event) {
-        handleRedactionEvent(ctx, evt, client, roomLinks, roomClients, db)
+        if ch, ok := roomChans[evt.RoomID]; ok {
+            ch <- RoomEvent{Ctx: ctx, Event: evt, Type: event.EventRedaction}
+        }
     })
-    // Handle membership events
+
     log.Printf("Registering membership event handler for event type: %s", event.StateMember)
     syncer.OnEventType(event.StateMember, func(ctx context.Context, evt *event.Event) {
-        handleMemberEvent(ctx, evt, client, roomLinks, roomClients, processedEventCache)
+        if ch, ok := roomChans[evt.RoomID]; ok {
+            ch <- RoomEvent{Ctx: ctx, Event: evt, Type: event.StateMember}
+        }
     })
-
 }
