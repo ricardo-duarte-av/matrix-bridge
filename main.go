@@ -25,6 +25,12 @@ var appStartTime time.Time
 // Global processed events cache
 var processedEventCache *ProcessedEventsCache
 
+// RoomEvent represents an event to be processed by a room's goroutine
+type RoomEvent struct {
+    Ctx   context.Context
+    Event *event.Event
+    Type  event.Type
+}
 
 // Config represents the structure of the configuration file.
 type Config struct {
@@ -374,11 +380,6 @@ func main() {
     roomClients := make(map[id.RoomID]*mautrix.Client) // room -> client
 
     // Per-room event channels
-    type RoomEvent struct {
-        Ctx   context.Context
-        Event *event.Event
-        Type  event.Type
-    }
     roomChans := make(map[id.RoomID]chan RoomEvent)
     var wg sync.WaitGroup
 
