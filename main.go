@@ -373,55 +373,84 @@ func main() {
     roomLinks := make(map[id.RoomID]id.RoomID)     // from -> to
     roomClients := make(map[id.RoomID]*mautrix.Client) // room -> client
 
-        // Process room links and build mappings
-        for i, link := range config.Links {
-                fromRoom := id.RoomID(link.From)
-                toRoom := id.RoomID(link.To)
+    // Per-room event channels
+    type RoomEvent struct {
+        Ctx   context.Context
+        Event *event.Event
+        Type  event.Type
+    }
+    roomChans := make(map[id.RoomID]chan RoomEvent)
+    var wg sync.WaitGroup
 
-                log.Printf("Processing link %d: %s (%s) -> %s (%s)",
-                        i+1, fromRoom, link.FromUser, toRoom, link.ToUser)
+    // Process room links and build mappings
+    for i, link := range config.Links {
+        fromRoom := id.RoomID(link.From)
+        toRoom := id.RoomID(link.To)
 
-                // Get the clients for the specified users
-                fromClient := getClientForUser(link.FromUser, clients)
-                toClient := getClientForUser(link.ToUser, clients)
+        log.Printf("Processing link %d: %s (%s) -> %s (%s)",
+            i+1, fromRoom, link.FromUser, toRoom, link.ToUser)
 
-                if fromClient == nil || toClient == nil {
-                        log.Printf("Error: Could not find client for one of the users in link %d", i+1)
-                        continue
-                }
+        // Get the clients for the specified users
+        fromClient := getClientForUser(link.FromUser, clients)
+        toClient := getClientForUser(link.ToUser, clients)
 
-                // Store mappings
-                roomLinks[fromRoom] = toRoom
-                roomClients[fromRoom] = fromClient
-                roomClients[toRoom] = toClient
-
-                // Join rooms
-                if joined, err := isRoomJoined(ctx, fromClient, fromRoom); err != nil {
-                        log.Printf("Warning: Failed to check room %s: %v", fromRoom, err)
-                } else if !joined {
-                        if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
-                                log.Printf("Warning: Failed to join room %s: %v", fromRoom, err)
-                        } else {
-                                log.Printf("Successfully joined room %s", fromRoom)
-                        }
-                }
-
-                if joined, err := isRoomJoined(ctx, toClient, toRoom); err != nil {
-                        log.Printf("Warning: Failed to check room %s: %v", toRoom, err)
-                } else if !joined {
-                        if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
-                                log.Printf("Warning: Failed to join room %s: %v", toRoom, err)
-                        } else {
-                                log.Printf("Successfully joined room %s", toRoom)
-                        }
-                }
-
-                // After joining rooms, set nicknames and avatars
-                log.Println("Setting room profiles (nicknames and avatars)...")
-                processRoomLinks(ctx, clients, config.Links)
-
-
+        if fromClient == nil || toClient == nil {
+            log.Printf("Error: Could not find client for one of the users in link %d", i+1)
+            continue
         }
+
+        // Store mappings
+        roomLinks[fromRoom] = toRoom
+        roomClients[fromRoom] = fromClient
+        roomClients[toRoom] = toClient
+
+        // Per-room event channel and goroutine
+        if _, exists := roomChans[fromRoom]; !exists {
+            ch := make(chan RoomEvent, 100)
+            roomChans[fromRoom] = ch
+            wg.Add(1)
+            go func(roomID id.RoomID, ch chan RoomEvent) {
+                defer wg.Done()
+                for re := range ch {
+                    switch re.Type {
+                    case event.EventMessage:
+                        handleMessageEvent(re.Ctx, re.Event, roomClients[roomID], roomLinks, roomClients, db)
+                    case event.EventReaction:
+                        handleReactionEvent(re.Ctx, re.Event, roomClients[roomID], roomLinks, roomClients, db)
+                    case event.EventRedaction:
+                        handleRedactionEvent(re.Ctx, re.Event, roomClients[roomID], roomLinks, roomClients, db)
+                    case event.StateMember:
+                        handleMemberEvent(re.Ctx, re.Event, roomClients[roomID], roomLinks, roomClients, processedEventCache)
+                    }
+                }
+            }(fromRoom, ch)
+        }
+
+        // Join rooms
+        if joined, err := isRoomJoined(ctx, fromClient, fromRoom); err != nil {
+            log.Printf("Warning: Failed to check room %s: %v", fromRoom, err)
+        } else if !joined {
+            if _, err := fromClient.JoinRoom(ctx, fromRoom.String(), nil); err != nil {
+                log.Printf("Warning: Failed to join room %s: %v", fromRoom, err)
+            } else {
+                log.Printf("Successfully joined room %s", fromRoom)
+            }
+        }
+
+        if joined, err := isRoomJoined(ctx, toClient, toRoom); err != nil {
+            log.Printf("Warning: Failed to check room %s: %v", toRoom, err)
+        } else if !joined {
+            if _, err := toClient.JoinRoom(ctx, toRoom.String(), nil); err != nil {
+                log.Printf("Warning: Failed to join room %s: %v", toRoom, err)
+            } else {
+                log.Printf("Successfully joined room %s", toRoom)
+            }
+        }
+
+        // After joining rooms, set nicknames and avatars
+        log.Println("Setting room profiles (nicknames and avatars)...")
+        processRoomLinks(ctx, clients, config.Links)
+    }
 
     // Start sync for all clients
     log.Println("Starting sync for all clients")
@@ -438,9 +467,8 @@ func main() {
 
         syncer := c.Syncer.(*mautrix.DefaultSyncer)
 
-        // Register event handlers
-        registerEventHandlers(syncer, c, roomLinks, roomClients, db)
-
+        // Register event handlers with per-room channel dispatch
+        registerEventHandlers(syncer, c, roomLinks, roomClients, db, roomChans)
 
         // Start sync loop
         go func() {
@@ -519,6 +547,12 @@ func main() {
     case sig := <-sigChan:
         log.Printf("Received signal %v, shutting down...", sig)
     }
+
+    // Close all room channels and wait for goroutines
+    for _, ch := range roomChans {
+        close(ch)
+    }
+    wg.Wait()
 
     cancel()
 }
