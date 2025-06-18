@@ -11,6 +11,7 @@ import (
     "maunium.net/go/mautrix"
     "maunium.net/go/mautrix/event"
     "maunium.net/go/mautrix/id"
+    "html"
 )
 
 
@@ -181,13 +182,28 @@ func handleMessageEvent(ctx context.Context, evt *event.Event, client *mautrix.C
                         }
                         log.Printf("Fetched sender profile: displayName=%s, avatarURL=%s", displayName, avatarURL)
 
-                        // Step 8: Add the per-message profile metadata
+                        // Step 8: Add the per-message profile metadata with fallback for old clients
                         contentMap["com.beeper.per_message_profile"] = map[string]interface{}{
                                 "avatar_url":  avatarURL,
                                 "displayname": displayName,
                                 "id":          evt.Sender.String(),
+                                "has_fallback": true,
                         }
-                        log.Printf("Added per-message profile to content: %+v", contentMap)
+                        
+                        // Add fallback for old clients: prefix the body with displayname
+                        if displayName != "" {
+                                originalBody := contentMap["body"].(string)
+                                contentMap["body"] = displayName + ": " + originalBody
+                                
+                                // Add HTML fallback if we have a formatted_body
+                                if formattedBody, exists := contentMap["formatted_body"]; exists {
+                                        htmlContent := formattedBody.(string)
+                                        // Escape the displayname for HTML
+                                        escapedDisplayName := html.EscapeString(displayName)
+                                        htmlFallback := fmt.Sprintf("<strong data-mx-profile-fallback>%s: </strong>", escapedDisplayName)
+                                        contentMap["formatted_body"] = htmlFallback + htmlContent
+                                }
+                        }
 
                         // Step 9: Forward the processed message to the target room
                         log.Printf("Forwarding message from %s to %s.", evt.RoomID, targetRoom)
@@ -438,7 +454,7 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
         avatarURL = "mxc://default/avatar"
     }
 
-    // Construct the message content
+    // Construct the message content with fallback for old clients
     contentMap := map[string]interface{}{
         "msgtype": "m.notice",
         "body":    message,
@@ -446,7 +462,19 @@ func handleMemberEvent(ctx context.Context, evt *event.Event, client *mautrix.Cl
             "avatar_url":  avatarURL,
             "displayname": displayName,
             "id":          evt.Sender.String(),
+            "has_fallback": true,
         },
+    }
+    
+    // Add fallback for old clients: prefix the body with displayname
+    if displayName != "" {
+        originalBody := contentMap["body"].(string)
+        contentMap["body"] = displayName + ": " + originalBody
+        
+        // Add HTML fallback
+        escapedDisplayName := html.EscapeString(displayName)
+        htmlFallback := fmt.Sprintf("<strong data-mx-profile-fallback>%s: </strong>", escapedDisplayName)
+        contentMap["formatted_body"] = htmlFallback + originalBody
     }
 
     // Send the message to the target room
