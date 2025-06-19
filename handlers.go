@@ -6,6 +6,7 @@ import (
     "encoding/json"
     "fmt"
     "log"
+    "regexp"
     "time"
     _ "github.com/mattn/go-sqlite3"
     "maunium.net/go/mautrix"
@@ -182,27 +183,38 @@ func handleMessageEvent(ctx context.Context, evt *event.Event, client *mautrix.C
                         }
                         log.Printf("Fetched sender profile: displayName=%s, avatarURL=%s", displayName, avatarURL)
 
-                        // Step 8: Add the per-message profile metadata with fallback for old clients
-                        contentMap["com.beeper.per_message_profile"] = map[string]interface{}{
-                                "avatar_url":  avatarURL,
-                                "displayname": displayName,
-                                "id":          evt.Sender.String(),
-                                "has_fallback": true,
-                        }
-                        
-                        // Add fallback for old clients: prefix the body with displayname
-                        if displayName != "" {
-                                originalBody := contentMap["body"].(string)
-                                contentMap["body"] = displayName + ": " + originalBody
-                                
-                                // Add HTML fallback if we have a formatted_body
-                                if formattedBody, exists := contentMap["formatted_body"]; exists {
-                                        htmlContent := formattedBody.(string)
-                                        // Escape the displayname for HTML
-                                        escapedDisplayName := html.EscapeString(displayName)
-                                        htmlFallback := fmt.Sprintf("<strong data-mx-profile-fallback>%s: </strong>", escapedDisplayName)
-                                        contentMap["formatted_body"] = htmlFallback + htmlContent
+                        // Step 8: Add the per-message profile metadata and fallback for old clients
+                        addProfileAndFallback(contentMap, displayName, avatarURL, evt.Sender.String())
+
+                        // If this is an edit, also add fallback/profile to m.new_content
+                        if relatesTo, ok := contentMap["m.relates_to"].(map[string]interface{}); ok {
+                            if relType, ok := relatesTo["rel_type"].(string); ok && relType == "m.replace" {
+                                // m.new_content should exist or be created
+                                newContent := map[string]interface{}{}
+                                // Copy relevant fields from contentMap to newContent
+                                for _, key := range []string{"body", "format", "formatted_body", "msgtype"} {
+                                    if val, ok := contentMap[key]; ok {
+                                        newContent[key] = val
+                                    }
                                 }
+                                // Remove fallback from body and formatted_body before adding new fallback
+                                if body, ok := newContent["body"].(string); ok && displayName != "" {
+                                    // Remove the fallback prefix if present
+                                    prefix := displayName + ": "
+                                    if len(body) >= len(prefix) && body[:len(prefix)] == prefix {
+                                        newContent["body"] = body[len(prefix):]
+                                    }
+                                }
+                                if formattedBody, ok := newContent["formatted_body"].(string); ok && displayName != "" {
+                                    // Remove the HTML fallback prefix if present
+                                    regex := `<strong\s+data-mx-profile-fallback(?:="")?\s*>[^<]+: </strong\s*>`
+                                    re := regexp.MustCompile(regex)
+                                    newContent["formatted_body"] = re.ReplaceAllString(formattedBody, "")
+                                }
+                                // Now add fallback/profile to m.new_content
+                                addProfileAndFallback(newContent, displayName, avatarURL, evt.Sender.String())
+                                contentMap["m.new_content"] = newContent
+                            }
                         }
 
                         // Step 9: Forward the processed message to the target room
@@ -518,4 +530,25 @@ func registerEventHandlers(syncer *mautrix.DefaultSyncer, client *mautrix.Client
             ch <- RoomEvent{Ctx: ctx, Event: evt, Type: event.StateMember}
         }
     })
+}
+
+// Helper to add per-message profile and fallback to a content map
+func addProfileAndFallback(contentMap map[string]interface{}, displayName, avatarURL, senderID string) {
+    contentMap["com.beeper.per_message_profile"] = map[string]interface{}{
+        "avatar_url":  avatarURL,
+        "displayname": displayName,
+        "id":          senderID,
+        "has_fallback": true,
+    }
+    if displayName != "" {
+        if body, ok := contentMap["body"].(string); ok {
+            contentMap["body"] = displayName + ": " + body
+        }
+        if formattedBody, exists := contentMap["formatted_body"]; exists {
+            htmlContent := formattedBody.(string)
+            escapedDisplayName := html.EscapeString(displayName)
+            htmlFallback := "<strong data-mx-profile-fallback>" + escapedDisplayName + ": </strong>"
+            contentMap["formatted_body"] = htmlFallback + htmlContent
+        }
+    }
 }
