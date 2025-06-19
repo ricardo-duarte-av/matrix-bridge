@@ -541,14 +541,23 @@ func addProfileAndFallback(contentMap map[string]interface{}, displayName, avata
         "has_fallback": true,
     }
     if displayName != "" {
+        // Add plaintext fallback to body
         if body, ok := contentMap["body"].(string); ok {
             contentMap["body"] = displayName + ": " + body
-        }
-        if formattedBody, exists := contentMap["formatted_body"]; exists {
-            htmlContent := formattedBody.(string)
+            
+            // Always ensure we have a formatted_body with HTML fallback when has_fallback is true
             escapedDisplayName := html.EscapeString(displayName)
+            escapedBody := html.EscapeString(body)
             htmlFallback := "<strong data-mx-profile-fallback>" + escapedDisplayName + ": </strong>"
-            contentMap["formatted_body"] = htmlFallback + htmlContent
+            
+            // If there's an existing formatted_body, use it, otherwise create from body
+            if formattedBody, exists := contentMap["formatted_body"]; exists {
+                htmlContent := formattedBody.(string)
+                contentMap["formatted_body"] = htmlFallback + htmlContent
+            } else {
+                contentMap["formatted_body"] = htmlFallback + escapedBody
+                contentMap["format"] = "org.matrix.custom.html"
+            }
         }
     }
 }
